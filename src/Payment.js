@@ -1,0 +1,160 @@
+import React, { useState } from 'react'
+import { Link, useHistory } from 'react-router-dom'
+import CheckoutProduct from './CheckoutProduct'
+import './Payment.css'
+import {useStateValue} from './StateProvider'
+import { CardElement, useElements, useStripe } from '@stripe/react-stripe-js'
+import CurrencyFormat from 'react-currency-format'
+import { getBasketTotal } from './reducer'
+import { useEffect } from 'react'
+import axios from './axios'
+import { db } from './firebase'
+
+function Payment() {
+    const [{ basket, user }, dispatch] = useStateValue()
+
+    const stripe = useStripe()
+    const elements = useElements()
+
+    const [succeeded, setSucceeded] = useState(false)
+    const [processing, setProcessing] = useState("")
+    const [error, setError] = useState(null)
+    const [disabled, setDisabled] = useState(true)
+    const [clientSecret, setClientSecret] = useState(true)
+
+    const history = useHistory()
+
+    useEffect(() => {
+        // generate the special stripe secret which allows us to charge a customer
+        //But ! Whenever the basket changes, we need to get a new secret
+        //because we need to tell stripe that there is no longer 50$ that were charging.
+        const getClientSecret = async () => {
+            /* axios is a way of making requests(post, get,...) */
+            const res = await axios({
+                method: 'post',
+                // Stripe expects the total in a currencies subunits which means 25.52$ is 2552 cents for them. So we need to multipliate the subtotal by 100
+                url: `/payments/create?total=${getBasketTotal(basket) * 100}`
+                /* the ?total is a questionMark total cuz this is smt called query param */
+            }).catch(e => alert(e.message))
+            setClientSecret(res.data.clientSecret)
+        }
+
+        getClientSecret()//thats how we run an async function inside of a useEffect
+    }, [basket])/* whenever the basket changes, we will make this request, and will update the special stripe secret who is the setClientSecret, which allows us to charge the customer the correct amount */
+
+    console.log('The SECRET IS >>> ', clientSecret)
+
+    const handleSubmit = async (event) => {
+        event.preventDefault()
+        setProcessing(true)//so as soon as I hit that enter, its gonna block me from hitting that button again. We dont want to pay twice or 5 times
+
+        const payload = await stripe.confirmCardPayment(clientSecret, {
+            payment_method: {
+                card: elements.getElement(CardElement)
+            }
+        }).then(({ paymentIntent }) => {
+            // paymentIntent = payment confiramtion. And we got it after destructurating the res
+
+            db
+                .collection('users')
+                .doc(user?.uid)
+                .collection('orders')
+                .doc(paymentIntent.id)
+                .set({
+                    basket: basket,
+                    amount: paymentIntent.amount,
+                    created: paymentIntent.created
+                })
+
+            setSucceeded(true)
+            setError(null)
+            setProcessing(false)
+
+            dispatch({
+                type: 'EMPTY_BASKET'
+            })
+
+            history.replace('/orders')
+        }).catch(e => alert(e.message))
+    }
+
+    const handleChange = event => {
+        //Listen for changes in the CardElement
+        // and display any errors as the customer types their card details
+        setDisabled(event.empty)//if the event is empty, disable the button
+        setError(event.error ? event.error.message : "")//if there is an error, show the error, otherwise show nothing
+    }
+
+    return (
+        <div className='payment'>
+            <div className="payment__container">
+                <h1>
+                    Checkout (
+                        <Link to="/checkout">{basket?.length} items</Link>
+                        )
+                </h1>
+                <div className="payment__section">
+                    <div className="payment__title">
+                        <h3>Delivery Address</h3>
+                    </div>
+                    <div className="payment__address">
+                        <p>{user?.email}</p>
+                        <p>123 React Street</p>
+                        <p>Belgium, Brussels</p>
+                    </div>
+                </div>
+                <div className="payment__section">
+                    <div className="payment__title">
+                        <h3>Review items and delivery</h3>
+                    </div>
+                    <div className="payment__items">
+                        {basket.map(item => (
+                            <CheckoutProduct
+                                id= {item.id}
+                                title={item.title}
+                                image={item.image}
+                                price={item.price}
+                                rating={item.rating}
+                            />
+                        ))}
+                    </div>
+                </div>
+                <div className="payment__section">
+                    <div className="payment__title">
+                        <h3>Payment Method</h3>
+                    </div>
+                    <div className="payment__details">
+                        {/* Stripe magic will go */}
+
+                        <form onSubmit={handleSubmit}>
+                            <CardElement onChange={handleChange}/>
+
+                            <div className="payment__priceContainer">
+                                <CurrencyFormat
+                                    renderText={(value) => (
+                                        <h3>Order Total: {value}</h3>
+                                    )}
+                                    decimalScale={2}
+                                    value={getBasketTotal(basket)}
+                                    displayType={"text"}
+                                    thousandSeparator={true}
+                                    prefix={"$"}
+                                />
+                                <button disabled={processing || disabled || succeeded}>
+                                    <span>{processing ? <p>Processing</p> :
+                                    "Buy Now"}</span>
+                                </button>
+                            </div>
+
+                            {/* if there is an error, only then, show the div with the error in. For example for the code number */}
+                            {error && <div>{error}</div>}
+                        </form>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    )
+}
+
+export default Payment
